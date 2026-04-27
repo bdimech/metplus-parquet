@@ -100,6 +100,11 @@ def read_line_type(input_path, suffix, skip_dates):
 # Transforming
 # ---------------------------------------------------------------------------
 
+def lead_to_hours(fcst_lead):
+    """Convert MET FCST_LEAD from HHMMSS integer to hours (e.g. 120000 -> 12)."""
+    return int(fcst_lead) // 10000
+
+
 def extract_metadata(df, input_path):
     """Pull constant column values into a metadata dict before they are dropped."""
     meta = {
@@ -119,7 +124,7 @@ def clean(df):
     drop = [c for c in METADATA_COLS + ["LINE_TYPE", "ALPHA"] if c in df.columns]
     df = df.drop(columns=drop)
     if "FCST_LEAD" in df.columns:
-        df.insert(1, "FCST_LEAD_H", df["FCST_LEAD"].apply(lambda x: int(x) // 10000))
+        df.insert(1, "FCST_LEAD_H", df["FCST_LEAD"].apply(lead_to_hours))
         df = df.drop(columns=["FCST_LEAD"])
     for col in ["FCST_VALID_BEG", "FCST_VALID_END", "OBS_VALID_BEG", "OBS_VALID_END"]:
         if col in df.columns:
