@@ -23,6 +23,13 @@ MERGE_KEYS = ["INIT_DATE", "FCST_LEAD_H", "FCST_VALID_BEG", "FCST_LEV", "VX_MASK
 SL1L2_UNIQUE = ["FOBAR", "FFBAR", "OOBAR"]
 SAL1L2_UNIQUE = ["FABAR", "OABAR", "FOABAR", "FFABAR", "OOABAR"]
 
+NUMERIC_COLS = [
+    "TOTAL",
+    "FBAR", "OBAR", "ME", "RMSE", "MAE",
+    "FOBAR", "FFBAR", "OOBAR",
+    "FABAR", "OABAR", "FOABAR", "FFABAR", "OOABAR",
+]
+
 INIT_DATE_RE = re.compile(r"^\d{10}$")
 
 
@@ -111,6 +118,9 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["FCST_VALID_BEG", "FCST_VALID_END", "OBS_VALID_BEG", "OBS_VALID_END"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], format="%Y%m%d_%H%M%S")
+    for col in NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
