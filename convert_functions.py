@@ -26,31 +26,29 @@ SAL1L2_UNIQUE = ["FABAR", "OABAR", "FOABAR", "FFABAR", "OOABAR"]
 INIT_DATE_RE = re.compile(r"^\d{10}$")
 
 
-def lead_to_hours(fcst_lead: int | str) -> int:
-    """Convert a MET FCST_LEAD value from HHMMSS integer to hours.
-
-    Args:
-        fcst_lead (int | str): lead time in HHMMSS format (e.g. 120000 for 12h).
-
-    Returns:
-        int: lead time in hours.
-    """
+def _lead_to_hours(fcst_lead: int | str) -> int:
+    """Convert a MET FCST_LEAD value from HHMMSS integer to hours."""
     return int(fcst_lead) // 10000
 
 
-def parse_file(content: str, init_date: datetime) -> pd.DataFrame:
-    """Parse a single METplus .stat or line-type text file into a DataFrame.
-
-    Args:
-        content (str): raw text content of the file.
-        init_date (datetime): initialisation date parsed from the parent folder name.
-
-    Returns:
-        pd.DataFrame: parsed data with INIT_DATE as the first column.
-    """
+def _parse_file(content: str, init_date: datetime) -> pd.DataFrame:
+    """Parse a single METplus .stat file into a DataFrame with INIT_DATE prepended."""
     df = pd.read_csv(io.StringIO(content), sep=r"\s+", na_values="NA")
     df.insert(0, "INIT_DATE", init_date)
     return df
+
+
+def _read_line_type(folder_path: str | Path, suffix: str, skip_dates: set) -> pd.DataFrame:
+    """Read all files of a given METplus line type from a GridStat output folder."""
+    return read_folder(folder_path, suffix, skip_dates)
+
+
+def _write_parquet(df: pd.DataFrame, metadata: dict, parquet_path: str | Path) -> None:
+    """Write a DataFrame to a parquet file with embedded file-level metadata."""
+    table = pa.Table.from_pandas(df)
+    encoded = {k.encode(): v.encode() for k, v in metadata.items()}
+    table = table.replace_schema_metadata({**table.schema.metadata, **encoded})
+    pq.write_table(table, parquet_path)
 
 
 def read_folder(folder_path: str | Path, suffix: str, skip_dates: set) -> pd.DataFrame:
@@ -72,22 +70,8 @@ def read_folder(folder_path: str | Path, suffix: str, skip_dates: set) -> pd.Dat
         if init_date in skip_dates:
             continue
         for f in subdir.glob(f"*{suffix}"):
-            frames.append(parse_file(f.read_text(encoding="utf-8"), init_date))
+            frames.append(_parse_file(f.read_text(encoding="utf-8"), init_date))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
-def read_line_type(folder_path: str | Path, suffix: str, skip_dates: set) -> pd.DataFrame:
-    """Read all files of a given METplus line type from a GridStat output folder.
-
-    Args:
-        folder_path (str | Path): path to the folder containing daily subdirectories.
-        suffix (str): line-type file suffix (e.g. '_cnt.txt', '_sl1l2.txt').
-        skip_dates (set): init dates to skip (already present in the parquet).
-
-    Returns:
-        pd.DataFrame: concatenated data for the requested line type.
-    """
-    return read_folder(folder_path, suffix, skip_dates)
 
 
 def extract_metadata(df: pd.DataFrame, folder_path: str | Path) -> dict:
@@ -124,7 +108,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     drop = [c for c in METADATA_COLS + ["LINE_TYPE", "ALPHA"] if c in df.columns]
     df = df.drop(columns=drop)
     if "FCST_LEAD" in df.columns:
-        df.insert(1, "FCST_LEAD_H", df["FCST_LEAD"].apply(lead_to_hours))
+        df.insert(1, "FCST_LEAD_H", df["FCST_LEAD"].apply(_lead_to_hours))
         df = df.drop(columns=["FCST_LEAD"])
     for col in ["FCST_VALID_BEG", "FCST_VALID_END", "OBS_VALID_BEG", "OBS_VALID_END"]:
         if col in df.columns:
@@ -171,23 +155,6 @@ def get_existing_dates(parquet_path: str | Path) -> set:
     return set(table.to_pandas()["INIT_DATE"].unique())
 
 
-def write_parquet(df: pd.DataFrame, metadata: dict, parquet_path: str | Path) -> None:
-    """Write a DataFrame to a parquet file with embedded file-level metadata.
-
-    Args:
-        df (pd.DataFrame): data to write.
-        metadata (dict): key/value pairs to embed in the parquet schema metadata.
-        parquet_path (str | Path): destination file path.
-
-    Returns:
-        None
-    """
-    table = pa.Table.from_pandas(df)
-    encoded = {k.encode(): v.encode() for k, v in metadata.items()}
-    table = table.replace_schema_metadata({**table.schema.metadata, **encoded})
-    pq.write_table(table, parquet_path)
-
-
 def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
     """Convert a folder of METplus GridStat outputs to a single parquet file.
 
@@ -212,7 +179,7 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
         print(f"Skipping {len(existing_dates)} already-loaded init date(s).")
 
     print("Reading CNT...")
-    cnt_raw = read_line_type(folder_path, "_cnt.txt", existing_dates)
+    cnt_raw = _read_line_type(folder_path, "_cnt.txt", existing_dates)
     if cnt_raw.empty:
         print("No new data found.")
         return
@@ -220,9 +187,9 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
     metadata = extract_metadata(cnt_raw, folder_path)
 
     print("Reading SL1L2...")
-    sl1l2_raw = read_line_type(folder_path, "_sl1l2.txt", existing_dates)
+    sl1l2_raw = _read_line_type(folder_path, "_sl1l2.txt", existing_dates)
     print("Reading SAL1L2...")
-    sal1l2_raw = read_line_type(folder_path, "_sal1l2.txt", existing_dates)
+    sal1l2_raw = _read_line_type(folder_path, "_sal1l2.txt", existing_dates)
 
     cnt    = clean(cnt_raw)
     sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
@@ -236,5 +203,5 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
         existing = pq.read_table(parquet_path).to_pandas()
         new_data = pd.concat([existing, new_data], ignore_index=True)
 
-    write_parquet(new_data, metadata, parquet_path)
+    _write_parquet(new_data, metadata, parquet_path)
     print(f"Written: {parquet_path}  ({len(new_data):,} rows total)")
