@@ -1,5 +1,6 @@
 *.zip
 *.parquet
+AGlobal4_Analysis_T_AllLevels_00Z/
 __pycache__/
 .ipynb_checkpoints/
 *.pyc
