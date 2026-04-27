@@ -1,20 +1,14 @@
 import sys
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
-import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from convert_to_parquet import convert
+from convert_functions import convert
 
 ZIP_PATH = Path(__file__).parent.parent / "AGlobal4_Analysis_T_AllLevels_00Z.zip"
-
-# ---------------------------------------------------------------------------
-# Minimal file content strings — space-separated, NA for missing values
-# ---------------------------------------------------------------------------
 
 CNT_CONTENT = (
     "VERSION MODEL DESC FCST_LEAD FCST_VALID_BEG FCST_VALID_END OBS_LEAD "
@@ -46,9 +40,6 @@ SAL1L2_CONTENT = (
     "NEAREST 1 NA NA NA NA SAL1L2 306 1.29 2.14 5.0 3.0 4.0 1.43\n"
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures: minimal sample folder
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def cnt_content():
@@ -67,7 +58,6 @@ def sal1l2_content():
 
 @pytest.fixture
 def sample_folder(tmp_path):
-    """Minimal folder structure matching METplus GridStat output layout."""
     init_dir = tmp_path / "2026041000"
     init_dir.mkdir()
     (init_dir / "grid_stat_test_120000L_20260410_120000V_cnt.txt").write_text(CNT_CONTENT)
@@ -76,32 +66,9 @@ def sample_folder(tmp_path):
     return tmp_path
 
 
-# ---------------------------------------------------------------------------
-# Fixtures: real data integration (extracted from zip once per session)
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="session")
 def real_data_folder(tmp_path_factory):
-    """Extract the test zip to a folder — mirrors real production layout."""
     extract_dir = tmp_path_factory.mktemp("real_data")
     with zipfile.ZipFile(ZIP_PATH) as z:
         z.extractall(extract_dir)
     return extract_dir
-
-
-@pytest.fixture(scope="session")
-def parquet_path(real_data_folder, tmp_path_factory):
-    out_dir = tmp_path_factory.mktemp("output")
-    convert(real_data_folder, out_dir)
-    return out_dir / f"{real_data_folder.name}.parquet"
-
-
-@pytest.fixture(scope="session")
-def converted_df(parquet_path):
-    return pq.read_table(parquet_path).to_pandas()
-
-
-@pytest.fixture(scope="session")
-def parquet_meta(parquet_path):
-    table = pq.read_table(parquet_path)
-    return {k.decode(): v.decode() for k, v in table.schema.metadata.items()}
