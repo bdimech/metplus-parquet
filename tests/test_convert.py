@@ -12,7 +12,6 @@ import pytest
 from convert_to_parquet import (
     _parse_file,
     _read_folder,
-    _read_zip,
     clean,
     convert,
     extract_metadata,
@@ -74,30 +73,6 @@ def test__parse_file_parses_numeric_values(cnt_content):
 
 
 # ---------------------------------------------------------------------------
-# test__read_zip
-# ---------------------------------------------------------------------------
-
-def test__read_zip_returns_dataframe(sample_zip):
-    df = _read_zip(sample_zip, "_cnt.txt", skip_dates=set())
-    assert isinstance(df, pd.DataFrame)
-    assert len(df) > 0
-
-def test__read_zip_skips_existing_dates(sample_zip):
-    df = _read_zip(sample_zip, "_cnt.txt", skip_dates={INIT_DATE})
-    assert len(df) == 0
-
-def test__read_zip_adds_init_date(sample_zip):
-    df = _read_zip(sample_zip, "_cnt.txt", skip_dates=set())
-    assert "INIT_DATE" in df.columns
-    assert df["INIT_DATE"].iloc[0] == INIT_DATE
-
-def test__read_zip_returns_empty_for_unknown_suffix(sample_zip):
-    df = _read_zip(sample_zip, "_unknown.txt", skip_dates=set())
-    assert isinstance(df, pd.DataFrame)
-    assert len(df) == 0
-
-
-# ---------------------------------------------------------------------------
 # test__read_folder
 # ---------------------------------------------------------------------------
 
@@ -120,24 +95,25 @@ def test__read_folder_ignores_non_date_dirs(sample_folder):
     df = _read_folder(sample_folder, "_cnt.txt", skip_dates=set())
     assert len(df) == 1
 
+def test__read_folder_returns_empty_for_unknown_suffix(sample_folder):
+    df = _read_folder(sample_folder, "_unknown.txt", skip_dates=set())
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 0
+
 
 # ---------------------------------------------------------------------------
 # test_read_line_type
 # ---------------------------------------------------------------------------
 
-def test_read_line_type_reads_from_zip(sample_zip):
-    df = read_line_type(sample_zip, "_cnt.txt", skip_dates=set())
-    assert len(df) > 0
-
-def test_read_line_type_reads_from_folder(sample_folder):
+def test_read_line_type_reads_cnt(sample_folder):
     df = read_line_type(sample_folder, "_cnt.txt", skip_dates=set())
     assert len(df) > 0
 
-def test_read_line_type_skips_dates_zip(sample_zip):
-    df = read_line_type(sample_zip, "_cnt.txt", skip_dates={INIT_DATE})
-    assert len(df) == 0
+def test_read_line_type_reads_sl1l2(sample_folder):
+    df = read_line_type(sample_folder, "_sl1l2.txt", skip_dates=set())
+    assert len(df) > 0
 
-def test_read_line_type_skips_dates_folder(sample_folder):
+def test_read_line_type_skips_existing_dates(sample_folder):
     df = read_line_type(sample_folder, "_cnt.txt", skip_dates={INIT_DATE})
     assert len(df) == 0
 
@@ -146,30 +122,29 @@ def test_read_line_type_skips_dates_folder(sample_folder):
 # test_extract_metadata
 # ---------------------------------------------------------------------------
 
-def test_extract_metadata_captures_model(cnt_content):
+def test_extract_metadata_captures_model(cnt_content, tmp_path):
     df = _parse_file(cnt_content, INIT_DATE)
-    meta = extract_metadata(df, "test.zip")
+    meta = extract_metadata(df, tmp_path)
     assert meta.get("MODEL") == "AGlobal4"
 
-def test_extract_metadata_captures_fcst_var(cnt_content):
+def test_extract_metadata_captures_fcst_var(cnt_content, tmp_path):
     df = _parse_file(cnt_content, INIT_DATE)
-    meta = extract_metadata(df, "test.zip")
+    meta = extract_metadata(df, tmp_path)
     assert meta.get("FCST_VAR") == "t"
 
-def test_extract_metadata_includes_source(cnt_content):
+def test_extract_metadata_includes_source(cnt_content, tmp_path):
     df = _parse_file(cnt_content, INIT_DATE)
-    meta = extract_metadata(df, "test.zip")
+    meta = extract_metadata(df, tmp_path)
     assert "source" in meta
-    assert meta["source"] == "test.zip"
 
-def test_extract_metadata_includes_created_at(cnt_content):
+def test_extract_metadata_includes_created_at(cnt_content, tmp_path):
     df = _parse_file(cnt_content, INIT_DATE)
-    meta = extract_metadata(df, "test.zip")
+    meta = extract_metadata(df, tmp_path)
     assert "created_at" in meta
 
-def test_extract_metadata_captures_all_metadata_cols(cnt_content):
+def test_extract_metadata_captures_all_metadata_cols(cnt_content, tmp_path):
     df = _parse_file(cnt_content, INIT_DATE)
-    meta = extract_metadata(df, "test.zip")
+    meta = extract_metadata(df, tmp_path)
     for col in METADATA_COLS:
         if col in df.columns:
             assert col in meta, f"Missing metadata key: {col}"
@@ -285,8 +260,7 @@ def test_get_existing_dates_returns_dates_from_parquet(tmp_path, cnt_content, sl
         _make_clean(sal1l2_content),
     )
     write_parquet(merged, {}, parquet_path)
-    dates = get_existing_dates(parquet_path)
-    assert INIT_DATE in dates
+    assert INIT_DATE in get_existing_dates(parquet_path)
 
 def test_get_existing_dates_returns_a_set(tmp_path, cnt_content, sl1l2_content, sal1l2_content):
     parquet_path = tmp_path / "test.parquet"
@@ -339,7 +313,7 @@ def test_write_parquet_preserves_columns(tmp_path, cnt_content, sl1l2_content, s
 
 
 # ---------------------------------------------------------------------------
-# test_convert (integration — uses real zip)
+# test_convert (integration — uses real extracted data folder)
 # ---------------------------------------------------------------------------
 
 def test_convert_creates_parquet_file(parquet_path):
@@ -378,8 +352,8 @@ def test_convert_metadata_keys_present(parquet_meta):
     for key in ["MODEL", "VERSION", "FCST_VAR", "source", "created_at"]:
         assert key in parquet_meta
 
-def test_convert_incremental_no_duplicate_rows(zip_path, parquet_path, converted_df):
+def test_convert_incremental_no_duplicate_rows(real_data_folder, parquet_path, converted_df):
     initial_count = len(converted_df)
-    convert(zip_path, parquet_path.parent)
+    convert(real_data_folder, parquet_path.parent)
     df_after = pq.read_table(parquet_path).to_pandas()
     assert len(df_after) == initial_count

@@ -1,11 +1,8 @@
-import io
 import sys
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -50,7 +47,7 @@ SAL1L2_CONTENT = (
 )
 
 # ---------------------------------------------------------------------------
-# Fixtures: sample data
+# Fixtures: minimal sample folder
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -79,31 +76,24 @@ def sample_folder(tmp_path):
     return tmp_path
 
 
-@pytest.fixture
-def sample_zip(tmp_path):
-    """Minimal zip matching METplus GridStat output layout."""
-    zip_path = tmp_path / "test.zip"
-    with zipfile.ZipFile(zip_path, "w") as z:
-        z.writestr("2026041000/grid_stat_test_120000L_20260410_120000V_cnt.txt", CNT_CONTENT)
-        z.writestr("2026041000/grid_stat_test_120000L_20260410_120000V_sl1l2.txt", SL1L2_CONTENT)
-        z.writestr("2026041000/grid_stat_test_120000L_20260410_120000V_sal1l2.txt", SAL1L2_CONTENT)
-    return zip_path
-
-
 # ---------------------------------------------------------------------------
-# Fixtures: real zip integration
+# Fixtures: real data integration (extracted from zip once per session)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def zip_path():
-    return ZIP_PATH
+def real_data_folder(tmp_path_factory):
+    """Extract the test zip to a folder — mirrors real production layout."""
+    extract_dir = tmp_path_factory.mktemp("real_data")
+    with zipfile.ZipFile(ZIP_PATH) as z:
+        z.extractall(extract_dir)
+    return extract_dir
 
 
 @pytest.fixture(scope="session")
-def parquet_path(tmp_path_factory):
+def parquet_path(real_data_folder, tmp_path_factory):
     out_dir = tmp_path_factory.mktemp("output")
-    convert(ZIP_PATH, out_dir)
-    return out_dir / "AGlobal4_Analysis_T_AllLevels_00Z.parquet"
+    convert(real_data_folder, out_dir)
+    return out_dir / f"{real_data_folder.name}.parquet"
 
 
 @pytest.fixture(scope="session")

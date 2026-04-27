@@ -2,22 +2,21 @@
 """
 Convert METplus GridStat .stat output files to a single Parquet file.
 
-Supports a folder of daily output directories or a zip archive.
+Walks a folder of daily output directories (YYYYMMDDHH subfolders).
 Merges CNT, SL1L2, and SAL1L2 line types into one row per
 init date / lead / level / domain — no duplicated columns.
 Incremental: skips init dates already present in the parquet.
 
 Usage:
-    python convert_to_parquet.py --input <folder_or_zip> [--output <dir>]
+    python convert_to_parquet.py --input <folder> [--output <dir>]
 
-Output parquet is named from the input folder/zip (e.g. AGlobal4_Analysis_T_AllLevels_00Z.parquet).
-If --output is omitted it is written alongside the input.
+Output parquet is named from the input folder (e.g. AGlobal4_Analysis_T_AllLevels_00Z.parquet).
+If --output is omitted it is written alongside the input folder.
 """
 
 import argparse
 import io
 import re
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,23 +60,6 @@ def _parse_file(content, init_date):
     return df
 
 
-def _read_zip(zip_path, suffix, skip_dates):
-    frames = []
-    with zipfile.ZipFile(zip_path) as z:
-        for fname in z.namelist():
-            if not fname.endswith(suffix):
-                continue
-            folder = fname.split("/")[0]
-            if not INIT_DATE_RE.match(folder):
-                continue
-            init_date = datetime.strptime(folder, "%Y%m%d%H")
-            if init_date in skip_dates:
-                continue
-            with z.open(fname) as f:
-                frames.append(_parse_file(f.read().decode("utf-8"), init_date))
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
 def _read_folder(folder_path, suffix, skip_dates):
     frames = []
     for subdir in sorted(Path(folder_path).iterdir()):
@@ -91,9 +73,8 @@ def _read_folder(folder_path, suffix, skip_dates):
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def read_line_type(input_path, suffix, skip_dates):
-    is_zip = Path(input_path).suffix == ".zip"
-    return _read_zip(input_path, suffix, skip_dates) if is_zip else _read_folder(input_path, suffix, skip_dates)
+def read_line_type(folder_path, suffix, skip_dates):
+    return _read_folder(folder_path, suffix, skip_dates)
 
 
 # ---------------------------------------------------------------------------
@@ -105,10 +86,10 @@ def lead_to_hours(fcst_lead):
     return int(fcst_lead) // 10000
 
 
-def extract_metadata(df, input_path):
+def extract_metadata(df, folder_path):
     """Pull constant column values into a metadata dict before they are dropped."""
     meta = {
-        "source": str(input_path),
+        "source": str(folder_path),
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     for col in METADATA_COLS:
@@ -166,29 +147,28 @@ def write_parquet(df, metadata, parquet_path):
 # Main
 # ---------------------------------------------------------------------------
 
-def convert(input_path, output_dir=None):
-    input_path = Path(input_path)
-    stem = input_path.stem  # folder or zip name without extension
-    out_dir = Path(output_dir) if output_dir else input_path.parent
+def convert(folder_path, output_dir=None):
+    folder_path = Path(folder_path)
+    out_dir = Path(output_dir) if output_dir else folder_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = out_dir / f"{stem}.parquet"
+    parquet_path = out_dir / f"{folder_path.name}.parquet"
 
     existing_dates = get_existing_dates(parquet_path)
     if existing_dates:
         print(f"Skipping {len(existing_dates)} already-loaded init date(s).")
 
     print("Reading CNT...")
-    cnt_raw = read_line_type(input_path, "_cnt.txt", existing_dates)
+    cnt_raw = read_line_type(folder_path, "_cnt.txt", existing_dates)
     if cnt_raw.empty:
         print("No new data found.")
         return
 
-    metadata = extract_metadata(cnt_raw, input_path)
+    metadata = extract_metadata(cnt_raw, folder_path)
 
     print("Reading SL1L2...")
-    sl1l2_raw = read_line_type(input_path, "_sl1l2.txt", existing_dates)
+    sl1l2_raw = read_line_type(folder_path, "_sl1l2.txt", existing_dates)
     print("Reading SAL1L2...")
-    sal1l2_raw = read_line_type(input_path, "_sal1l2.txt", existing_dates)
+    sal1l2_raw = read_line_type(folder_path, "_sal1l2.txt", existing_dates)
 
     cnt    = clean(cnt_raw)
     sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
@@ -210,8 +190,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Convert METplus GridStat .stat files to Parquet."
     )
-    parser.add_argument("--input",  required=True, help="Folder or zip of GridStat outputs")
-    parser.add_argument("--output", default=None,  help="Output directory (default: alongside input)")
+    parser.add_argument("--input",  required=True, help="Folder of GridStat daily output directories")
+    parser.add_argument("--output", default=None,  help="Output directory (default: alongside input folder)")
     args = parser.parse_args()
     convert(args.input, args.output)
 
