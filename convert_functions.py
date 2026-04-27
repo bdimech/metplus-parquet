@@ -34,8 +34,7 @@ def _lead_to_hours(fcst_lead: int | str) -> int:
 def _parse_file(content: str, init_date: datetime) -> pd.DataFrame:
     """Parse a single METplus .stat file into a DataFrame with INIT_DATE prepended."""
     df = pd.read_csv(io.StringIO(content), sep=r"\s+", na_values="NA")
-    df.insert(0, "INIT_DATE", init_date)
-    return df
+    return df.assign(INIT_DATE=init_date)[["INIT_DATE"] + df.columns.tolist()]
 
 
 def _read_line_type(folder_path: str | Path, suffix: str, skip_dates: set) -> pd.DataFrame:
@@ -108,8 +107,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     drop = [c for c in METADATA_COLS + ["LINE_TYPE", "ALPHA"] if c in df.columns]
     df = df.drop(columns=drop)
     if "FCST_LEAD" in df.columns:
-        df.insert(1, "FCST_LEAD_H", df["FCST_LEAD"].apply(_lead_to_hours))
-        df = df.drop(columns=["FCST_LEAD"])
+        df = df.assign(FCST_LEAD_H=df["FCST_LEAD"].apply(_lead_to_hours)).drop(columns=["FCST_LEAD"])
     for col in ["FCST_VALID_BEG", "FCST_VALID_END", "OBS_VALID_BEG", "OBS_VALID_END"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], format="%Y%m%d_%H%M%S")
@@ -175,33 +173,24 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
     parquet_path = out_dir / f"{folder_path.name}.parquet"
 
     existing_dates = get_existing_dates(parquet_path)
-    if existing_dates:
-        print(f"Skipping {len(existing_dates)} already-loaded init date(s).")
 
-    print("Reading CNT...")
     cnt_raw = _read_line_type(folder_path, "_cnt.txt", existing_dates)
     if cnt_raw.empty:
-        print("No new data found.")
         return
 
     metadata = extract_metadata(cnt_raw, folder_path)
 
-    print("Reading SL1L2...")
-    sl1l2_raw = _read_line_type(folder_path, "_sl1l2.txt", existing_dates)
-    print("Reading SAL1L2...")
+    sl1l2_raw  = _read_line_type(folder_path, "_sl1l2.txt",  existing_dates)
     sal1l2_raw = _read_line_type(folder_path, "_sal1l2.txt", existing_dates)
 
     cnt    = clean(cnt_raw)
     sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
     sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
 
-    print("Merging line types...")
     new_data = merge_line_types(cnt, sl1l2, sal1l2)
 
     if parquet_path.exists():
-        print("Appending to existing parquet...")
         existing = pq.read_table(parquet_path).to_pandas()
         new_data = pd.concat([existing, new_data], ignore_index=True)
 
     _write_parquet(new_data, metadata, parquet_path)
-    print(f"Written: {parquet_path}  ({len(new_data):,} rows total)")
