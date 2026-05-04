@@ -2,6 +2,9 @@
 *.parquet
 *.pptx
 make_pptx.py
+make_tree_art.py
+make_schema_comic.py
+*.png
 AGlobal4_Analysis_T_AllLevels_00Z/
 __pycache__/
 .ipynb_checkpoints/
