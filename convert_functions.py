@@ -244,7 +244,7 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
     sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
 
     new_data = merge_line_types(cnt, sl1l2, sal1l2)
-    new_data = new_data.assign(PARAMETER=parameter)
+    new_data = new_data.assign(PARAMETER=parameter, STAT_TYPE="GridStat")
 
     if parquet_path.exists():
         existing = pq.read_table(parquet_path).to_pandas()
@@ -305,7 +305,7 @@ def convert_all(input_dir: str | Path, output_dir: str | Path) -> None:
             sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
 
             merged = merge_line_types(cnt, sl1l2, sal1l2)
-            frames.append(merged.assign(PARAMETER=parameter))
+            frames.append(merged.assign(PARAMETER=parameter, STAT_TYPE="GridStat"))
 
         if not frames:
             continue
