@@ -57,6 +57,39 @@ def _write_parquet(df: pd.DataFrame, metadata: dict, parquet_path: str | Path) -
     pq.write_table(table, parquet_path)
 
 
+def _get_data_dir(folder_path: Path) -> Path:
+    """Return the GridStat subdirectory if present, otherwise return folder_path."""
+    gridstat = folder_path / "GridStat"
+    return gridstat if gridstat.is_dir() else folder_path
+
+
+def _parse_parameter(folder_name: str) -> str:
+    """Extract the parameter string from a config folder name.
+
+    For a name like AGlobal4_Analysis_T_AllLevels_00Z the parameter is T_AllLevels.
+    Falls back to the full folder name if it does not match the expected pattern.
+    """
+    parts = folder_name.split("_")
+    if len(parts) < 4:
+        return folder_name
+    return "_".join(parts[2:-1])
+
+
+def parse_config_name(folder_name: str) -> tuple[str, str, str, str]:
+    """Parse a METplus config folder name into (model, obs, parameter, timestep).
+
+    Expected format: <model>_<obs>_<parameter>[_<level>]_<timestep>
+
+    Args:
+        folder_name: name of the config folder (not the full path).
+
+    Returns:
+        tuple of (model, obs, parameter, timestep).
+    """
+    parts = folder_name.split("_")
+    return parts[0], parts[1], "_".join(parts[2:-1]), parts[-1]
+
+
 def read_folder(folder_path: str | Path, suffix: str, skip_dates: set) -> pd.DataFrame:
     """Read all files matching a suffix from a folder of YYYYMMDDHH subdirectories.
 
@@ -148,29 +181,40 @@ def merge_line_types(cnt: pd.DataFrame, sl1l2: pd.DataFrame, sal1l2: pd.DataFram
     return merged
 
 
-def get_existing_dates(parquet_path: str | Path) -> set:
+def get_existing_dates(parquet_path: str | Path, parameter: str = None) -> set:
     """Return the set of INIT_DATE values already present in a parquet file.
 
     Args:
         parquet_path (str | Path): path to the existing parquet file.
+        parameter (str | None): if provided, restrict to rows with this PARAMETER value.
 
     Returns:
         set: existing init dates, or an empty set if the file does not exist.
     """
     if not Path(parquet_path).exists():
         return set()
-    table = pq.read_table(parquet_path, columns=["INIT_DATE"])
+    schema = pq.read_schema(parquet_path)
+    if parameter is not None and "PARAMETER" in schema.names:
+        table = pq.read_table(
+            parquet_path,
+            columns=["INIT_DATE"],
+            filters=[("PARAMETER", "=", parameter)],
+        )
+    else:
+        table = pq.read_table(parquet_path, columns=["INIT_DATE"])
     return set(table.to_pandas()["INIT_DATE"].unique())
 
 
 def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
     """Convert a folder of METplus GridStat outputs to a single parquet file.
 
-    Walks YYYYMMDDHH subdirectories, merges CNT, SL1L2, and SAL1L2 line types,
-    and appends only new init dates if a parquet file already exists.
+    Handles folders that contain a GridStat/ subdirectory. Merges CNT, SL1L2, and
+    SAL1L2 line types and appends only new init dates if a parquet file already exists.
+    A PARAMETER column is added using the config folder name.
 
     Args:
-        folder_path (str | Path): folder containing daily GridStat output subdirectories.
+        folder_path (str | Path): folder containing daily GridStat output subdirectories,
+            or a folder with a GridStat/ subdirectory.
         output_dir (str | Path): directory for the output parquet file. Defaults to
             the parent of folder_path.
 
@@ -182,25 +226,94 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = out_dir / f"{folder_path.name}.parquet"
 
-    existing_dates = get_existing_dates(parquet_path)
+    data_dir = _get_data_dir(folder_path)
+    parameter = _parse_parameter(folder_path.name)
+    existing_dates = get_existing_dates(parquet_path, parameter)
 
-    cnt_raw = _read_line_type(folder_path, "_cnt.txt", existing_dates)
+    cnt_raw = _read_line_type(data_dir, "_cnt.txt", existing_dates)
     if cnt_raw.empty:
         return
 
     metadata = extract_metadata(cnt_raw, folder_path)
 
-    sl1l2_raw  = _read_line_type(folder_path, "_sl1l2.txt",  existing_dates)
-    sal1l2_raw = _read_line_type(folder_path, "_sal1l2.txt", existing_dates)
+    sl1l2_raw  = _read_line_type(data_dir, "_sl1l2.txt",  existing_dates)
+    sal1l2_raw = _read_line_type(data_dir, "_sal1l2.txt", existing_dates)
 
     cnt    = clean(cnt_raw)
     sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
     sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
 
     new_data = merge_line_types(cnt, sl1l2, sal1l2)
+    new_data = new_data.assign(PARAMETER=parameter)
 
     if parquet_path.exists():
         existing = pq.read_table(parquet_path).to_pandas()
         new_data = pd.concat([existing, new_data], ignore_index=True)
 
     _write_parquet(new_data, metadata, parquet_path)
+
+
+def convert_all(input_dir: str | Path, output_dir: str | Path) -> None:
+    """Convert all METplus config folders in input_dir to grouped Parquet files.
+
+    Groups config folders by <model>_<observation> and writes one Parquet file per
+    group, combining all parameters and timesteps. Skips init dates already present
+    for each parameter (incremental loading).
+
+    Args:
+        input_dir (str | Path): directory containing config folders named
+            <model>_<obs>_<parameter>[_<level>]_<timestep>.
+        output_dir (str | Path): directory for output Parquet files.
+
+    Returns:
+        None
+    """
+    input_dir  = Path(input_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    groups: dict[str, list[Path]] = {}
+    for folder in sorted(input_dir.iterdir()):
+        if not folder.is_dir():
+            continue
+        model, obs, _param, _ts = parse_config_name(folder.name)
+        key = f"{model}_{obs}"
+        groups.setdefault(key, []).append(folder)
+
+    for group_key, folders in groups.items():
+        parquet_path = output_dir / f"{group_key}.parquet"
+        frames = []
+        metadata = {}
+
+        for folder in folders:
+            _, _, parameter, _ = parse_config_name(folder.name)
+            data_dir = _get_data_dir(folder)
+            existing_dates = get_existing_dates(parquet_path, parameter)
+
+            cnt_raw = _read_line_type(data_dir, "_cnt.txt", existing_dates)
+            if cnt_raw.empty:
+                continue
+
+            if not metadata:
+                metadata = extract_metadata(cnt_raw, folder)
+
+            sl1l2_raw  = _read_line_type(data_dir, "_sl1l2.txt",  existing_dates)
+            sal1l2_raw = _read_line_type(data_dir, "_sal1l2.txt", existing_dates)
+
+            cnt    = clean(cnt_raw)
+            sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
+            sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
+
+            merged = merge_line_types(cnt, sl1l2, sal1l2)
+            frames.append(merged.assign(PARAMETER=parameter))
+
+        if not frames:
+            continue
+
+        new_data = pd.concat(frames, ignore_index=True)
+
+        if parquet_path.exists():
+            existing = pq.read_table(parquet_path).to_pandas()
+            new_data = pd.concat([existing, new_data], ignore_index=True)
+
+        _write_parquet(new_data, metadata, parquet_path)
