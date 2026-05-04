@@ -1,5 +1,7 @@
 *.zip
 *.parquet
+*.pptx
+make_pptx.py
 AGlobal4_Analysis_T_AllLevels_00Z/
 __pycache__/
 .ipynb_checkpoints/
