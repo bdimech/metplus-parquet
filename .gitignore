@@ -1,5 +1,9 @@
 *.zip
 *.parquet
+input/
+input_all/
+output/
+output_all/
 *.pptx
 make_pptx.py
 make_tree_art.py
