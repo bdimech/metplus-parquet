@@ -20,7 +20,8 @@ Converting METplus GridStat verification outputs into Parquet format for efficie
 .
 ├── convert_to_parquet.py   # CLI entry point
 ├── convert_functions.py    # Core conversion logic
-├── workspace.ipynb         # Jupyter notebook for exploration
+├── metplus-parquet.ipynb   # Jupyter notebook — conversion, exploration, and plotting
+├── workspace.ipynb         # scratch notebook
 └── tests/
     ├── conftest.py         # Shared fixtures
     └── test_convert_functions.py
