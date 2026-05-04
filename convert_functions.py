@@ -28,6 +28,13 @@ NUMERIC_COLS = [
     "FBAR", "OBAR", "ME", "RMSE", "MAE",
     "FOBAR", "FFBAR", "OOBAR",
     "FABAR", "OABAR", "FOABAR", "FFABAR", "OOABAR",
+    # ECNT (EnsembleStat) columns
+    "N_ENS", "CRPS", "CRPSS", "IGN", "SPREAD",
+    "ME_OERR", "RMSE_OERR", "SPREAD_OERR", "SPREAD_PLUS_OERR",
+    "CRPSCL", "CRPS_EMP", "CRPSCL_EMP", "CRPSS_EMP", "CRPS_EMP_FAIR",
+    "SPREAD_MD", "MAE_OERR", "BIAS_RATIO",
+    "N_GE_OBS", "ME_GE_OBS", "N_LT_OBS", "ME_LT_OBS",
+    "IGN_CONV_OERR", "IGN_CORR_OERR",
 ]
 
 INIT_DATE_RE = re.compile(r"^\d{10}$")
@@ -181,12 +188,13 @@ def merge_line_types(cnt: pd.DataFrame, sl1l2: pd.DataFrame, sal1l2: pd.DataFram
     return merged
 
 
-def get_existing_dates(parquet_path: str | Path, parameter: str = None) -> set:
+def get_existing_dates(parquet_path: str | Path, parameter: str = None, stat_type: str = None) -> set:
     """Return the set of INIT_DATE values already present in a parquet file.
 
     Args:
         parquet_path (str | Path): path to the existing parquet file.
         parameter (str | None): if provided, restrict to rows with this PARAMETER value.
+        stat_type (str | None): if provided, restrict to rows with this STAT_TYPE value.
 
     Returns:
         set: existing init dates, or an empty set if the file does not exist.
@@ -194,14 +202,12 @@ def get_existing_dates(parquet_path: str | Path, parameter: str = None) -> set:
     if not Path(parquet_path).exists():
         return set()
     schema = pq.read_schema(parquet_path)
+    filters = []
     if parameter is not None and "PARAMETER" in schema.names:
-        table = pq.read_table(
-            parquet_path,
-            columns=["INIT_DATE"],
-            filters=[("PARAMETER", "=", parameter)],
-        )
-    else:
-        table = pq.read_table(parquet_path, columns=["INIT_DATE"])
+        filters.append(("PARAMETER", "=", parameter))
+    if stat_type is not None and "STAT_TYPE" in schema.names:
+        filters.append(("STAT_TYPE", "=", stat_type))
+    table = pq.read_table(parquet_path, columns=["INIT_DATE"], filters=filters or None)
     return set(table.to_pandas()["INIT_DATE"].unique())
 
 
@@ -228,7 +234,7 @@ def convert(folder_path: str | Path, output_dir: str | Path = None) -> None:
 
     data_dir = _get_data_dir(folder_path)
     parameter = _parse_parameter(folder_path.name)
-    existing_dates = get_existing_dates(parquet_path, parameter)
+    existing_dates = get_existing_dates(parquet_path, parameter, "GridStat")
 
     cnt_raw = _read_line_type(data_dir, "_cnt.txt", existing_dates)
     if cnt_raw.empty:
@@ -287,25 +293,33 @@ def convert_all(input_dir: str | Path, output_dir: str | Path) -> None:
 
         for folder in folders:
             _, _, parameter, _ = parse_config_name(folder.name)
+
+            # GridStat
             data_dir = _get_data_dir(folder)
-            existing_dates = get_existing_dates(parquet_path, parameter)
+            existing_dates = get_existing_dates(parquet_path, parameter, "GridStat")
 
             cnt_raw = _read_line_type(data_dir, "_cnt.txt", existing_dates)
-            if cnt_raw.empty:
-                continue
+            if not cnt_raw.empty:
+                if not metadata:
+                    metadata = extract_metadata(cnt_raw, folder)
+                sl1l2_raw  = _read_line_type(data_dir, "_sl1l2.txt",  existing_dates)
+                sal1l2_raw = _read_line_type(data_dir, "_sal1l2.txt", existing_dates)
+                cnt    = clean(cnt_raw)
+                sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
+                sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
+                merged = merge_line_types(cnt, sl1l2, sal1l2)
+                frames.append(merged.assign(PARAMETER=parameter, STAT_TYPE="GridStat"))
 
-            if not metadata:
-                metadata = extract_metadata(cnt_raw, folder)
-
-            sl1l2_raw  = _read_line_type(data_dir, "_sl1l2.txt",  existing_dates)
-            sal1l2_raw = _read_line_type(data_dir, "_sal1l2.txt", existing_dates)
-
-            cnt    = clean(cnt_raw)
-            sl1l2  = clean(sl1l2_raw)  if not sl1l2_raw.empty  else pd.DataFrame()
-            sal1l2 = clean(sal1l2_raw) if not sal1l2_raw.empty else pd.DataFrame()
-
-            merged = merge_line_types(cnt, sl1l2, sal1l2)
-            frames.append(merged.assign(PARAMETER=parameter, STAT_TYPE="GridStat"))
+            # EnsembleStat
+            ens_dir = folder / "EnsembleStat"
+            if ens_dir.is_dir():
+                existing_dates_ens = get_existing_dates(parquet_path, parameter, "EnsembleStat")
+                ecnt_raw = _read_line_type(ens_dir, "_ecnt.txt", existing_dates_ens)
+                if not ecnt_raw.empty:
+                    if not metadata:
+                        metadata = extract_metadata(ecnt_raw, folder)
+                    ecnt = clean(ecnt_raw)
+                    frames.append(ecnt.assign(PARAMETER=parameter, STAT_TYPE="EnsembleStat"))
 
         if not frames:
             continue
